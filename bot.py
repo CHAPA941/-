@@ -299,7 +299,7 @@ async def cmd_rank(message: Message):
     rank = get_rank(target_id)
     await message.answer(f"Ранг пользователя {target_id}: {rank}")
 
-# Обработка личных сообщений
+# Обработка личных сообщений (с защитой от удаления темы)
 @dp.message(F.chat.type == "private")
 async def handle_user_message(message: Message):
     user_id = message.from_user.id
@@ -309,6 +309,7 @@ async def handle_user_message(message: Message):
         await message.answer("Вы заблокированы и не можете отправлять сообщения.")
         return
 
+    # Если пользователь ещё не создал тему (нет записи) – создаём по первому сообщению с тегами
     if user_id not in user_topics:
         text = message.text or ""
         type_comm, admin_gender = parse_request(text)
@@ -336,9 +337,37 @@ async def handle_user_message(message: Message):
             await message.answer("Пожалуйста, укажи в сообщении и категорию, и пол админа.\nНапример: «привет поддержка мальчик» или «общение девочка».\nМожно и с хэштегами: #поддержка #мальчик")
         return
 
+    # Если тема уже есть, пытаемся отправить сообщение в неё.
+    # Если тема была удалена вручную, возникнет ошибка "message thread not found",
+    # тогда создаём новую тему и отправляем туда.
     topic_id = user_topics[user_id]
     text = f"💬 Сообщение от пользователя:\n{message.text}"
-    await bot.send_message(GROUP_ID, text, message_thread_id=topic_id)
+    try:
+        await bot.send_message(GROUP_ID, text, message_thread_id=topic_id)
+    except Exception as e:
+        error_text = str(e).lower()
+        if "message thread not found" in error_text or "topic closed" in error_text or "chat not found" in error_text:
+            # Тема удалена, создаём новую
+            username = message.from_user.username or f"id{user_id}"
+            try:
+                topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
+                new_topic_id = topic.message_thread_id
+                user_topics[user_id] = new_topic_id
+                # Отправляем информацию о новом запросе (можно без полной карточки, но для порядка отправим)
+                info = (
+                    f"🔄 Восстановление темы после удаления.\n"
+                    f"👤 Имя: {message.from_user.full_name}\n"
+                    f"🔖 Username: @{message.from_user.username or 'нет'}\n"
+                    f"💬 Новое сообщение:\n{message.text}"
+                )
+                await bot.send_message(GROUP_ID, info, message_thread_id=new_topic_id, reply_markup=get_keyboard(user_id))
+                await message.answer("Тема была пересоздана, администраторы получили твоё сообщение.")
+            except Exception as e2:
+                logging.error(f"Не удалось создать новую тему после удаления: {e2}")
+                await message.answer("Произошла ошибка при отправке сообщения. Попробуй ещё раз.")
+        else:
+            logging.error(f"Ошибка отправки сообщения в тему {topic_id}: {e}")
+            await message.answer("Не удалось отправить сообщение. Попробуй позже.")
 
 # Обработка сообщений из тем (админы)
 @dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
