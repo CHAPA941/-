@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -12,14 +13,16 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 PORT = int(os.getenv("PORT", 10000))
 OWNER_IDS = set(map(int, (os.getenv("OWNER_IDS", "") or "").split(",") if os.getenv("OWNER_IDS") else []))
+DATA_FILE = "data.json"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-user_topics = {}   # user_id -> topic_id
+# Структуры данных, загружаемые из файла
+user_topics = {}
 blocked_users = set()
 admins = set()
-owners = OWNER_IDS
+owners = set(OWNER_IDS)
 all_users = set()
 
 WELCOME_TEXT = (
@@ -35,6 +38,38 @@ WELCOME_TEXT = (
     "Пусть здесь тебе будет спокойно — будто кто-то тихо держит тебя за руку и не торопит ни с ответами, ни с чувствами. 🤍"
 )
 
+# ---------- Функции для работы с данными ----------
+def load_data():
+    global user_topics, blocked_users, admins, owners, all_users
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            user_topics = {int(k): v for k, v in data.get("user_topics", {}).items()}
+            blocked_users = set(map(int, data.get("blocked_users", [])))
+            admins = set(map(int, data.get("admins", [])))
+            owners = set(map(int, data.get("owners", [])))
+            all_users = set(map(int, data.get("all_users", [])))
+        except Exception as e:
+            logging.error(f"Ошибка загрузки данных: {e}")
+    # Добавляем владельцев из окружения
+    owners.update(OWNER_IDS)
+
+def save_data():
+    data = {
+        "user_topics": {str(k): v for k, v in user_topics.items()},
+        "blocked_users": list(blocked_users),
+        "admins": list(admins),
+        "owners": list(owners),
+        "all_users": list(all_users)
+    }
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения данных: {e}")
+
+# ---------- Вспомогательные функции ----------
 def parse_request(text: str):
     text_lower = text.lower()
     type_comm = None
@@ -155,6 +190,7 @@ async def cmd_close(message: Message):
         try:
             await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
             user_topics.pop(user_id, None)
+            save_data()
             await message.answer("Тема удалена.")
         except Exception as e:
             logging.error(f"Ошибка удаления темы: {e}")
@@ -170,6 +206,7 @@ async def cmd_clear(message: Message):
     user_topics.clear()
     blocked_users.clear()
     all_users.clear()
+    save_data()
     await message.answer("Все данные сброшены.")
 
 @dp.message(Command("broadcast"), F.chat.id == GROUP_ID)
@@ -211,9 +248,11 @@ async def cmd_setrank(message: Message):
         return
     if rank == "admin":
         admins.add(target_id)
+        save_data()
         await message.answer(f"Пользователь {target_id} назначен админом.")
     elif rank == "owner":
         owners.add(target_id)
+        save_data()
         await message.answer(f"Пользователь {target_id} назначен владельцем.")
     else:
         await message.answer("Ранг может быть только admin или owner.")
@@ -234,6 +273,7 @@ async def cmd_removerank(message: Message):
         return
     admins.discard(target_id)
     owners.discard(target_id)
+    save_data()
     await message.answer(f"Ранг пользователя {target_id} снят.")
 
 @dp.message(Command("liststaff"), F.chat.id == GROUP_ID)
@@ -256,6 +296,7 @@ async def block_user_cmd(message: Message):
             break
     if user_id:
         blocked_users.add(user_id)
+        save_data()
         await message.answer(f"Пользователь {user_id} заблокирован.")
     else:
         await message.answer("Не удалось определить пользователя.")
@@ -270,6 +311,7 @@ async def unblock_user_cmd(message: Message):
             break
     if user_id:
         blocked_users.discard(user_id)
+        save_data()
         await message.answer(f"Пользователь {user_id} разблокирован.")
     else:
         await message.answer("Не удалось определить пользователя.")
@@ -304,12 +346,12 @@ async def cmd_rank(message: Message):
 async def handle_user_message(message: Message):
     user_id = message.from_user.id
     all_users.add(user_id)
+    save_data()
 
     if user_id in blocked_users:
         await message.answer("Вы заблокированы и не можете отправлять сообщения.")
         return
 
-    # Если пользователь ещё не создал тему (нет записи) – создаём по первому сообщению с тегами
     if user_id not in user_topics:
         text = message.text or ""
         type_comm, admin_gender = parse_request(text)
@@ -319,6 +361,7 @@ async def handle_user_message(message: Message):
                 topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
                 topic_id = topic.message_thread_id
                 user_topics[user_id] = topic_id
+                save_data()
 
                 info = (
                     f"🆕 Новый запрос!\n"
@@ -337,9 +380,6 @@ async def handle_user_message(message: Message):
             await message.answer("Пожалуйста, укажи в сообщении и категорию, и пол админа.\nНапример: «привет поддержка мальчик» или «общение девочка».\nМожно и с хэштегами: #поддержка #мальчик")
         return
 
-    # Если тема уже есть, пытаемся отправить сообщение в неё.
-    # Если тема была удалена вручную, возникнет ошибка "message thread not found",
-    # тогда создаём новую тему и отправляем туда.
     topic_id = user_topics[user_id]
     text = f"💬 Сообщение от пользователя:\n{message.text}"
     try:
@@ -347,13 +387,12 @@ async def handle_user_message(message: Message):
     except Exception as e:
         error_text = str(e).lower()
         if "message thread not found" in error_text or "topic closed" in error_text or "chat not found" in error_text:
-            # Тема удалена, создаём новую
             username = message.from_user.username or f"id{user_id}"
             try:
                 topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
                 new_topic_id = topic.message_thread_id
                 user_topics[user_id] = new_topic_id
-                # Отправляем информацию о новом запросе (можно без полной карточки, но для порядка отправим)
+                save_data()
                 info = (
                     f"🔄 Восстановление темы после удаления.\n"
                     f"👤 Имя: {message.from_user.full_name}\n"
@@ -398,6 +437,7 @@ async def process_block_button(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     if user_id not in blocked_users:
         blocked_users.add(user_id)
+        save_data()
         try:
             await bot.send_message(user_id, "Вы были заблокированы.")
         except:
@@ -418,6 +458,7 @@ async def process_confirm_unblock(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     if user_id in blocked_users:
         blocked_users.discard(user_id)
+        save_data()
         try:
             await bot.send_message(user_id, "Вы были разблокированы.")
         except:
@@ -456,6 +497,7 @@ async def process_read_button(callback: CallbackQuery):
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    load_data()
     await bot.delete_webhook(drop_pending_updates=True)
 
     polling_task = asyncio.create_task(dp.start_polling(bot))
