@@ -18,12 +18,18 @@ DATA_FILE = "data.json"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Структуры данных, загружаемые из файла
-user_topics = {}
+# Основные данные
+user_topics = {}           # user_id -> topic_id
 blocked_users = set()
 admins = set()
 owners = set(OWNER_IDS)
 all_users = set()
+
+# Маппинг сообщений для редактирования
+# admin_to_user_msg: (topic_id, admin_message_id) -> user_message_id
+admin_to_user_msg = {}
+# user_to_admin_msg: (user_id, user_message_id) -> admin_message_id
+user_to_admin_msg = {}
 
 WELCOME_TEXT = (
     "🌙 Врата распахнулись — и в этот секунд время будто замедлило бег, чтобы осмотреть бережно встретить тебя. 🌙\n\n"
@@ -38,9 +44,9 @@ WELCOME_TEXT = (
     "Пусть здесь тебе будет спокойно — будто кто-то тихо держит тебя за руку и не торопит ни с ответами, ни с чувствами. 🤍"
 )
 
-# ---------- Функции для работы с данными ----------
+# ---------- Функции данных ----------
 def load_data():
-    global user_topics, blocked_users, admins, owners, all_users
+    global user_topics, blocked_users, admins, owners, all_users, admin_to_user_msg, user_to_admin_msg
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -50,9 +56,11 @@ def load_data():
             admins = set(map(int, data.get("admins", [])))
             owners = set(map(int, data.get("owners", [])))
             all_users = set(map(int, data.get("all_users", [])))
+            # Маппинг сообщений
+            admin_to_user_msg = {tuple(map(int, k.split(':'))): v for k, v in data.get("admin_to_user_msg", {}).items()}
+            user_to_admin_msg = {tuple(map(int, k.split(':'))): v for k, v in data.get("user_to_admin_msg", {}).items()}
         except Exception as e:
             logging.error(f"Ошибка загрузки данных: {e}")
-    # Добавляем владельцев из окружения
     owners.update(OWNER_IDS)
 
 def save_data():
@@ -61,7 +69,9 @@ def save_data():
         "blocked_users": list(blocked_users),
         "admins": list(admins),
         "owners": list(owners),
-        "all_users": list(all_users)
+        "all_users": list(all_users),
+        "admin_to_user_msg": {f"{k[0]}:{k[1]}": v for k, v in admin_to_user_msg.items()},
+        "user_to_admin_msg": {f"{k[0]}:{k[1]}": v for k, v in user_to_admin_msg.items()}
     }
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -69,7 +79,7 @@ def save_data():
     except Exception as e:
         logging.error(f"Ошибка сохранения данных: {e}")
 
-# ---------- Вспомогательные функции ----------
+# ---------- Вспомогательные ----------
 def parse_request(text: str):
     text_lower = text.lower()
     type_comm = None
@@ -141,7 +151,8 @@ async def cmd_help(message: Message):
         "/clear - сбросить все данные (осторожно!)\n"
         "/broadcast <текст> - разослать сообщение всем пользователям\n\n"
         "Сообщения без // пересылаются пользователю.\n"
-        "Сообщения с // остаются в теме как заметки."
+        "Сообщения с // остаются в теме как заметки.\n"
+        "Редактирование сообщений синхронизируется."
     )
     await message.answer(help_text)
 
@@ -190,6 +201,9 @@ async def cmd_close(message: Message):
         try:
             await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
             user_topics.pop(user_id, None)
+            # Удаляем связанные маппинги
+            admin_to_user_msg = {k: v for k, v in admin_to_user_msg.items() if k[0] != topic_id}
+            user_to_admin_msg = {k: v for k, v in user_to_admin_msg.items() if k[0] != user_id}
             save_data()
             await message.answer("Тема удалена.")
         except Exception as e:
@@ -206,6 +220,8 @@ async def cmd_clear(message: Message):
     user_topics.clear()
     blocked_users.clear()
     all_users.clear()
+    admin_to_user_msg.clear()
+    user_to_admin_msg.clear()
     save_data()
     await message.answer("Все данные сброшены.")
 
@@ -341,7 +357,7 @@ async def cmd_rank(message: Message):
     rank = get_rank(target_id)
     await message.answer(f"Ранг пользователя {target_id}: {rank}")
 
-# Обработка личных сообщений (с защитой от удаления темы)
+# ---------- Обработка личных сообщений ----------
 @dp.message(F.chat.type == "private")
 async def handle_user_message(message: Message):
     user_id = message.from_user.id
@@ -371,7 +387,8 @@ async def handle_user_message(message: Message):
                     f"🚻 Предпочтительный пол админа: {admin_gender}\n\n"
                     f"Начинайте общение. Сообщения без // будут отправлены пользователю."
                 )
-                await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
+                sent_msg = await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
+                # Сохраняем маппинг: это сообщение от бота в тему, его можно не связывать с пользователем для редактирования
                 await message.answer("Готово! Твой запрос принят. Администратор скоро свяжется с тобой в этом чате. Все сообщения, которые ты напишешь, будут переданы ему.")
             except Exception as e:
                 logging.error(f"Не удалось создать тему: {e}")
@@ -380,13 +397,18 @@ async def handle_user_message(message: Message):
             await message.answer("Пожалуйста, укажи в сообщении и категорию, и пол админа.\nНапример: «привет поддержка мальчик» или «общение девочка».\nМожно и с хэштегами: #поддержка #мальчик")
         return
 
+    # Если тема существует, пересылаем сообщение
     topic_id = user_topics[user_id]
     text = f"💬 Сообщение от пользователя:\n{message.text}"
     try:
-        await bot.send_message(GROUP_ID, text, message_thread_id=topic_id)
+        admin_msg = await bot.send_message(GROUP_ID, text, message_thread_id=topic_id)
+        # Сохраняем маппинг: (user_id, user_message_id) -> admin_message_id
+        user_to_admin_msg[(user_id, message.message_id)] = admin_msg.message_id
+        save_data()
     except Exception as e:
         error_text = str(e).lower()
         if "message thread not found" in error_text or "topic closed" in error_text or "chat not found" in error_text:
+            # Тема удалена, создаём новую
             username = message.from_user.username or f"id{user_id}"
             try:
                 topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
@@ -399,7 +421,10 @@ async def handle_user_message(message: Message):
                     f"🔖 Username: @{message.from_user.username or 'нет'}\n"
                     f"💬 Новое сообщение:\n{message.text}"
                 )
-                await bot.send_message(GROUP_ID, info, message_thread_id=new_topic_id, reply_markup=get_keyboard(user_id))
+                sent_admin_msg = await bot.send_message(GROUP_ID, info, message_thread_id=new_topic_id, reply_markup=get_keyboard(user_id))
+                # Сохраняем маппинг
+                user_to_admin_msg[(user_id, message.message_id)] = sent_admin_msg.message_id
+                save_data()
                 await message.answer("Тема была пересоздана, администраторы получили твоё сообщение.")
             except Exception as e2:
                 logging.error(f"Не удалось создать новую тему после удаления: {e2}")
@@ -408,7 +433,7 @@ async def handle_user_message(message: Message):
             logging.error(f"Ошибка отправки сообщения в тему {topic_id}: {e}")
             await message.answer("Не удалось отправить сообщение. Попробуй позже.")
 
-# Обработка сообщений из тем (админы)
+# ---------- Обработка сообщений из тем (админы) ----------
 @dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
 async def handle_admin_message(message: Message):
     if message.from_user.is_bot or message.is_topic_message is False:
@@ -425,13 +450,69 @@ async def handle_admin_message(message: Message):
         return
     text = message.text or ""
     if text.startswith("//"):
-        return
+        return  # внутренняя заметка, не пересылаем
+
     try:
-        await bot.send_message(user_id, text)
+        user_msg = await bot.send_message(user_id, text)
+        # Сохраняем маппинг: (topic_id, admin_message_id) -> user_message_id
+        admin_to_user_msg[(topic_id, message.message_id)] = user_msg.message_id
+        save_data()
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-# Callback-кнопки
+# ---------- Редактирование сообщений ----------
+@dp.edited_message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
+async def handle_admin_edited_message(message: Message):
+    if message.from_user.is_bot:
+        return
+    topic_id = message.message_thread_id
+    user_id = None
+    for uid, tid in user_topics.items():
+        if tid == topic_id:
+            user_id = uid
+            break
+    if user_id is None:
+        return
+
+    # Проверяем, есть ли связь с отправленным сообщением
+    key = (topic_id, message.message_id)
+    user_message_id = admin_to_user_msg.get(key)
+    if not user_message_id:
+        return
+
+    new_text = message.text or ""
+    if new_text.startswith("//"):
+        # Если админ добавил // при редактировании, не обновляем у пользователя
+        # Можно просто удалить связь или оставить как есть
+        return
+
+    try:
+        await bot.edit_message_text(chat_id=user_id, message_id=user_message_id, text=new_text)
+    except Exception as e:
+        logging.error(f"Не удалось отредактировать сообщение у пользователя: {e}")
+
+@dp.edited_message(F.chat.type == "private")
+async def handle_user_edited_message(message: Message):
+    user_id = message.from_user.id
+    topic_id = user_topics.get(user_id)
+    if not topic_id:
+        return
+
+    key = (user_id, message.message_id)
+    admin_message_id = user_to_admin_msg.get(key)
+    if not admin_message_id:
+        return
+
+    new_text = message.text or ""
+    # Восстанавливаем префикс
+    full_text = f"💬 Сообщение от пользователя:\n{new_text}"
+
+    try:
+        await bot.edit_message_text(chat_id=GROUP_ID, message_id=admin_message_id, text=full_text)
+    except Exception as e:
+        logging.error(f"Не удалось отредактировать сообщение в теме: {e}")
+
+# ---------- Callback-кнопки ----------
 @dp.callback_query(F.data.startswith("block:"))
 async def process_block_button(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
