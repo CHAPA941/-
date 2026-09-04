@@ -63,7 +63,6 @@ async def load_data():
                     logging.error(f"Ошибка загрузки данных: статус {resp.status}")
     except Exception as e:
         logging.error(f"Ошибка загрузки данных из JsonBlob: {e}")
-    # Владельцы из переменной окружения всегда добавляются
     owners.update(OWNER_IDS)
 
 async def save_data():
@@ -89,7 +88,7 @@ async def save_data():
     except Exception as e:
         logging.error(f"Ошибка сохранения данных в JsonBlob: {e}")
 
-# ---------- Остальные функции (без изменений) ----------
+# ---------- Вспомогательные ----------
 def parse_request(text: str):
     text_lower = text.lower()
     type_comm = None
@@ -421,18 +420,16 @@ async def handle_user_message(message: Message):
         elif message.sticker:
             await bot.send_sticker(GROUP_ID, message.sticker.file_id, message_thread_id=target_topic_id)
         elif message.text:
-            await bot.send_message(GROUP_ID, message.text, message_thread_id=target_topic_id)
-            return True
+            sent = await bot.send_message(GROUP_ID, message.text, message_thread_id=target_topic_id)
+            return sent  # возвращаем объект сообщения для маппинга
         else:
             await bot.copy_message(GROUP_ID, message.chat.id, message.message_id, message_thread_id=target_topic_id)
-        return False
+        return None
 
     try:
-        is_text = await send_media_to_topic(topic_id)
-        if is_text and message.text:
-            # Сохраняем маппинг для редактирования
-            sent_admin_msg = await bot.send_message(GROUP_ID, message.text, message_thread_id=topic_id)
-            user_to_admin_msg[(user_id, message.message_id)] = sent_admin_msg.message_id
+        sent_msg = await send_media_to_topic(topic_id)
+        if sent_msg and message.text:
+            user_to_admin_msg[(user_id, message.message_id)] = sent_msg.message_id
             await save_data()
     except Exception as e:
         error_text = str(e).lower()
@@ -449,6 +446,7 @@ async def handle_user_message(message: Message):
                     f"🔖 Username: @{message.from_user.username or 'нет'}\n"
                 )
                 await bot.send_message(GROUP_ID, info, message_thread_id=new_topic_id, reply_markup=get_keyboard(user_id))
+                # Отправляем сообщение в новую тему, но не сохраняем маппинг (опционально)
                 await send_media_to_topic(new_topic_id)
                 await message.answer("Тема была пересоздана, администраторы получили твоё сообщение.")
             except Exception as e2:
