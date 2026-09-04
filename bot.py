@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -13,7 +14,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 PORT = int(os.getenv("PORT", 10000))
 OWNER_IDS = set(map(int, (os.getenv("OWNER_IDS", "") or "").split(",") if os.getenv("OWNER_IDS") else []))
-DATA_FILE = "data.json"
+JSONBLOB_URL = os.getenv("JSONBLOB_URL", "")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -23,8 +24,6 @@ blocked_users = set()
 admins = set()
 owners = set(OWNER_IDS)
 all_users = set()
-
-# Маппинг сообщений для редактирования (только текстовые)
 admin_to_user_msg = {}
 user_to_admin_msg = {}
 
@@ -41,25 +40,36 @@ WELCOME_TEXT = (
     "Пусть здесь тебе будет спокойно — будто кто-то тихо держит тебя за руку и не торопит ни с ответами, ни с чувствами. 🤍"
 )
 
-# ---------- Функции данных ----------
-def load_data():
+# ---------- Функции для работы с JsonBlob ----------
+async def load_data():
     global user_topics, blocked_users, admins, owners, all_users, admin_to_user_msg, user_to_admin_msg
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            user_topics = {int(k): v for k, v in data.get("user_topics", {}).items()}
-            blocked_users = set(map(int, data.get("blocked_users", [])))
-            admins = set(map(int, data.get("admins", [])))
-            owners = set(map(int, data.get("owners", [])))
-            all_users = set(map(int, data.get("all_users", [])))
-            admin_to_user_msg = {tuple(map(int, k.split(':'))): v for k, v in data.get("admin_to_user_msg", {}).items()}
-            user_to_admin_msg = {tuple(map(int, k.split(':'))): v for k, v in data.get("user_to_admin_msg", {}).items()}
-        except Exception as e:
-            logging.error(f"Ошибка загрузки данных: {e}")
+    if not JSONBLOB_URL:
+        logging.warning("JSONBLOB_URL не задан. Данные не будут загружены.")
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(JSONBLOB_URL) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    user_topics = {int(k): v for k, v in data.get("user_topics", {}).items()}
+                    blocked_users = set(map(int, data.get("blocked_users", [])))
+                    admins = set(map(int, data.get("admins", [])))
+                    owners = set(map(int, data.get("owners", [])))
+                    all_users = set(map(int, data.get("all_users", [])))
+                    admin_to_user_msg = {tuple(map(int, k.split(':'))): v for k, v in data.get("admin_to_user_msg", {}).items()}
+                    user_to_admin_msg = {tuple(map(int, k.split(':'))): v for k, v in data.get("user_to_admin_msg", {}).items()}
+                    logging.info("Данные загружены из JsonBlob")
+                else:
+                    logging.error(f"Ошибка загрузки данных: статус {resp.status}")
+    except Exception as e:
+        logging.error(f"Ошибка загрузки данных из JsonBlob: {e}")
+    # Владельцы из переменной окружения всегда добавляются
     owners.update(OWNER_IDS)
 
-def save_data():
+async def save_data():
+    if not JSONBLOB_URL:
+        logging.warning("JSONBLOB_URL не задан. Данные не будут сохранены.")
+        return
     data = {
         "user_topics": {str(k): v for k, v in user_topics.items()},
         "blocked_users": list(blocked_users),
@@ -70,12 +80,16 @@ def save_data():
         "user_to_admin_msg": {f"{k[0]}:{k[1]}": v for k, v in user_to_admin_msg.items()}
     }
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        async with aiohttp.ClientSession() as session:
+            async with session.put(JSONBLOB_URL, json=data) as resp:
+                if resp.status == 200 or resp.status == 204:
+                    logging.info("Данные сохранены в JsonBlob")
+                else:
+                    logging.error(f"Ошибка сохранения данных: статус {resp.status}")
     except Exception as e:
-        logging.error(f"Ошибка сохранения данных: {e}")
+        logging.error(f"Ошибка сохранения данных в JsonBlob: {e}")
 
-# ---------- Вспомогательные ----------
+# ---------- Остальные функции (без изменений) ----------
 def parse_request(text: str):
     text_lower = text.lower()
     type_comm = None
@@ -197,10 +211,9 @@ async def cmd_close(message: Message):
         try:
             await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
             user_topics.pop(user_id, None)
-            # Удаляем связанные маппинги
             admin_to_user_msg = {k: v for k, v in admin_to_user_msg.items() if k[0] != topic_id}
             user_to_admin_msg = {k: v for k, v in user_to_admin_msg.items() if k[0] != user_id}
-            save_data()
+            await save_data()
             await message.answer("Тема удалена.")
         except Exception as e:
             logging.error(f"Ошибка удаления темы: {e}")
@@ -218,7 +231,7 @@ async def cmd_clear(message: Message):
     all_users.clear()
     admin_to_user_msg.clear()
     user_to_admin_msg.clear()
-    save_data()
+    await save_data()
     await message.answer("Все данные сброшены.")
 
 @dp.message(Command("broadcast"), F.chat.id == GROUP_ID)
@@ -260,11 +273,11 @@ async def cmd_setrank(message: Message):
         return
     if rank == "admin":
         admins.add(target_id)
-        save_data()
+        await save_data()
         await message.answer(f"Пользователь {target_id} назначен админом.")
     elif rank == "owner":
         owners.add(target_id)
-        save_data()
+        await save_data()
         await message.answer(f"Пользователь {target_id} назначен владельцем.")
     else:
         await message.answer("Ранг может быть только admin или owner.")
@@ -285,7 +298,7 @@ async def cmd_removerank(message: Message):
         return
     admins.discard(target_id)
     owners.discard(target_id)
-    save_data()
+    await save_data()
     await message.answer(f"Ранг пользователя {target_id} снят.")
 
 @dp.message(Command("liststaff"), F.chat.id == GROUP_ID)
@@ -297,7 +310,7 @@ async def cmd_liststaff(message: Message):
     admins_list = ", ".join(map(str, admins)) if admins else "нет"
     await message.answer(f"👑 Владельцы: {owners_list}\n🛡️ Админы: {admins_list}")
 
-# Текстовые команды блокировки/разблокировки
+# ---------- Текстовые команды блокировки/разблокировки ----------
 @dp.message(Command("block"), F.chat.id == GROUP_ID)
 async def block_user_cmd(message: Message):
     topic_id = message.message_thread_id
@@ -308,7 +321,7 @@ async def block_user_cmd(message: Message):
             break
     if user_id:
         blocked_users.add(user_id)
-        save_data()
+        await save_data()
         await message.answer(f"Пользователь {user_id} заблокирован.")
     else:
         await message.answer("Не удалось определить пользователя.")
@@ -323,7 +336,7 @@ async def unblock_user_cmd(message: Message):
             break
     if user_id:
         blocked_users.discard(user_id)
-        save_data()
+        await save_data()
         await message.answer(f"Пользователь {user_id} разблокирован.")
     else:
         await message.answer("Не удалось определить пользователя.")
@@ -358,7 +371,7 @@ async def cmd_rank(message: Message):
 async def handle_user_message(message: Message):
     user_id = message.from_user.id
     all_users.add(user_id)
-    save_data()
+    await save_data()
 
     if user_id in blocked_users:
         await message.answer("Вы заблокированы и не можете отправлять сообщения.")
@@ -373,7 +386,7 @@ async def handle_user_message(message: Message):
                 topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
                 topic_id = topic.message_thread_id
                 user_topics[user_id] = topic_id
-                save_data()
+                await save_data()
 
                 info = (
                     f"🆕 Новый запрос!\n"
@@ -392,7 +405,6 @@ async def handle_user_message(message: Message):
             await message.answer("Пожалуйста, укажи в сообщении и категорию, и пол админа.\nНапример: «привет поддержка мальчик» или «общение девочка».\nМожно и с хэштегами: #поддержка #мальчик")
         return
 
-    # Тема существует, пересылаем сообщение в тему
     topic_id = user_topics[user_id]
 
     async def send_media_to_topic(target_topic_id):
@@ -409,10 +421,7 @@ async def handle_user_message(message: Message):
         elif message.sticker:
             await bot.send_sticker(GROUP_ID, message.sticker.file_id, message_thread_id=target_topic_id)
         elif message.text:
-            # Отправляем без префикса
             await bot.send_message(GROUP_ID, message.text, message_thread_id=target_topic_id)
-            # Сохраняем маппинг для текстового сообщения
-            # Не сохраняем, так как обработка ниже
             return True
         else:
             await bot.copy_message(GROUP_ID, message.chat.id, message.message_id, message_thread_id=target_topic_id)
@@ -421,13 +430,10 @@ async def handle_user_message(message: Message):
     try:
         is_text = await send_media_to_topic(topic_id)
         if is_text and message.text:
-            # Сохраняем маппинг: (user_id, user_message_id) -> admin_message_id (но мы его не получили из функции)
-            # Поэтому после отправки нужно получить отправленное сообщение. Так как send_media_to_topic не возвращает сообщение,
-            # мы не можем сохранить маппинг для редактирования. Оставим как есть или переделаем.
-            # В данном случае редактирование текстовых сообщений не будет работать для пользовательских сообщений с префиксом,
-            # но мы убрали префикс, так что просто не будем сохранять маппинг для текста.
-            # Однако редактирование админских сообщений работает (там есть маппинг).
-            pass
+            # Сохраняем маппинг для редактирования
+            sent_admin_msg = await bot.send_message(GROUP_ID, message.text, message_thread_id=topic_id)
+            user_to_admin_msg[(user_id, message.message_id)] = sent_admin_msg.message_id
+            await save_data()
     except Exception as e:
         error_text = str(e).lower()
         if "message thread not found" in error_text or "topic closed" in error_text or "chat not found" in error_text:
@@ -436,7 +442,7 @@ async def handle_user_message(message: Message):
                 topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
                 new_topic_id = topic.message_thread_id
                 user_topics[user_id] = new_topic_id
-                save_data()
+                await save_data()
                 info = (
                     f"🔄 Восстановление темы после удаления.\n"
                     f"👤 Имя: {message.from_user.full_name}\n"
@@ -468,11 +474,9 @@ async def handle_admin_message(message: Message):
     if user_id is None:
         return
 
-    # Если сообщение начинается с // — это заметка, не пересылаем
     if message.text and message.text.startswith("//"):
         return
 
-    # Пересылаем контент пользователю
     try:
         if message.voice:
             await bot.send_voice(user_id, message.voice.file_id)
@@ -489,7 +493,7 @@ async def handle_admin_message(message: Message):
         elif message.text:
             user_msg = await bot.send_message(user_id, message.text)
             admin_to_user_msg[(topic_id, message.message_id)] = user_msg.message_id
-            save_data()
+            await save_data()
         else:
             await bot.copy_message(user_id, message.chat.id, message.message_id)
     except Exception as e:
@@ -536,7 +540,6 @@ async def handle_user_edited_message(message: Message):
         return
 
     new_text = message.text or ""
-    # Без префикса
     full_text = new_text
 
     try:
@@ -550,7 +553,7 @@ async def process_block_button(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     if user_id not in blocked_users:
         blocked_users.add(user_id)
-        save_data()
+        await save_data()
         try:
             await bot.send_message(user_id, "Вы были заблокированы.")
         except:
@@ -571,7 +574,7 @@ async def process_confirm_unblock(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     if user_id in blocked_users:
         blocked_users.discard(user_id)
-        save_data()
+        await save_data()
         try:
             await bot.send_message(user_id, "Вы были разблокированы.")
         except:
@@ -610,7 +613,7 @@ async def process_read_button(callback: CallbackQuery):
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    load_data()
+    await load_data()
     await bot.delete_webhook(drop_pending_updates=True)
 
     polling_task = asyncio.create_task(dp.start_polling(bot))
