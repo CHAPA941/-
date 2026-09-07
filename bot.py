@@ -672,6 +672,4 @@ async def show_admin_buttons(message: Message):
     buttons = []
     for a in admins:
         tag = admin_tags.get(a, "")
-        role = admin_roles.get(a, "")
-        name = f"{tag} — {role}" if tag and role else (tag or role or f"ID {a}")
-        buttons.append([Inline
+        role = admin_roles.get(a
