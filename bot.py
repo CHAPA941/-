@@ -256,7 +256,8 @@ async def cmd_help(message: Message):
         "/block - заблокировать пользователя\n"
         "/unblock - разблокировать пользователя\n"
         "/warn - выдать предупреждение\n"
-        "/mute <минуты> - замутить пользователя\n"
+        "/mute <число> <минут|часов|дней> <причина> - замутить\n"
+        "/unmute - размутить\n"
         "/warns - посмотреть предупреждения\n"
         "/myrank - свой ранг\n\n"
         "Команды владельца:\n"
@@ -289,11 +290,7 @@ async def cmd_stats(message: Message):
 @dp.message(Command("id"), F.chat.id == GROUP_ID)
 async def cmd_id(message: Message):
     topic_id = message.message_thread_id
-    user_id = None
-    for uid, tid in user_topics.items():
-        if tid == topic_id:
-            user_id = uid
-            break
+    user_id = next((uid for uid, tid in user_topics.items() if tid == topic_id), None)
     await message.answer(f"ID пользователя: {user_id}" if user_id else "Не удалось определить пользователя.")
 
 @dp.message(Command("close"), F.chat.id == GROUP_ID)
@@ -475,28 +472,60 @@ async def cmd_warn(message: Message):
         await message.answer(f"⚠️ Предупреждение выдано. Всего: {warns[user_id]}")
 
 @dp.message(Command("mute"), F.chat.id == GROUP_ID)
-async def cmd_mute(message: Message):
+async def cmd_mute_ru(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Недостаточно прав.")
         return
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("Формат: /mute <минуты>")
+    args = message.text.split(maxsplit=3)
+    if len(args) < 2:
+        await message.answer("Формат: /mute <число> <минут|часов|дней> <причина>\nПример: /mute 5 минут спам")
         return
     try:
-        minutes = int(args[1])
-    except:
-        await message.answer("Неверное количество минут.")
+        value = int(args[1])
+    except ValueError:
+        await message.answer("Неверное число.")
+        return
+    unit = "минут"
+    reason = ""
+    if len(args) >= 3:
+        if args[2].startswith(("час", "часов", "час.", "ч")):
+            unit = "часов"
+            value *= 60
+        elif args[2].startswith(("день", "дней", "д.", "дн")):
+            unit = "дней"
+            value *= 1440
+        else:
+            reason = args[2]
+    if len(args) >= 4:
+        reason = args[3] if not reason else reason + " " + args[3]
+
+    topic_id = message.message_thread_id
+    user_id = next((uid for uid, tid in user_topics.items() if tid == topic_id), None)
+    if not user_id:
+        await message.answer("Не удалось определить пользователя.")
+        return
+    until = datetime.now() + timedelta(minutes=value)
+    mutes[user_id] = until
+    await save_data()
+    reason_text = f"\nПричина: {reason}" if reason else ""
+    await message.answer(f"🔇 Пользователь замучен до {until.strftime('%H:%M')}{reason_text}")
+
+@dp.message(Command("unmute"), F.chat.id == GROUP_ID)
+async def cmd_unmute(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав.")
         return
     topic_id = message.message_thread_id
     user_id = next((uid for uid, tid in user_topics.items() if tid == topic_id), None)
     if not user_id:
         await message.answer("Не удалось определить пользователя.")
         return
-    until = datetime.now() + timedelta(minutes=minutes)
-    mutes[user_id] = until
-    await save_data()
-    await message.answer(f"🔇 Пользователь замучен на {minutes} мин.")
+    if user_id in mutes:
+        del mutes[user_id]
+        await save_data()
+        await message.answer("🔊 Пользователь размучен.")
+    else:
+        await message.answer("Пользователь не в муте.")
 
 @dp.message(Command("warns"), F.chat.id == GROUP_ID)
 async def cmd_warns(message: Message):
@@ -517,7 +546,6 @@ async def handle_user_message(message: Message, state: FSMContext):
     all_users.add(user_id)
     await save_data()
 
-    # Проверка мута
     if user_id in mutes and datetime.now() < mutes[user_id]:
         await message.answer(f"🔇 Вы в муте до {mutes[user_id].strftime('%H:%M')}.")
         return
@@ -529,7 +557,6 @@ async def handle_user_message(message: Message, state: FSMContext):
         await message.answer("Вы заблокированы и не можете отправлять сообщения.")
         return
 
-    # Обработка reply-кнопок
     if message.text == "👤 Выбрать админа":
         await show_admin_buttons(message)
         return
@@ -540,7 +567,6 @@ async def handle_user_message(message: Message, state: FSMContext):
         await message.answer(rules_text)
         return
 
-    # Если диалог не начат
     if user_id not in user_topics:
         text = message.text or ""
         if is_greeting(text):
@@ -573,7 +599,6 @@ async def handle_user_message(message: Message, state: FSMContext):
             await message.answer("Пожалуйста, укажи категорию и пол админа, например: «привет поддержка мальчик».\nИли используй кнопки /start.")
         return
 
-    # Пересылка сообщения в тему
     topic_id = user_topics[user_id]
 
     async def send_media_to_topic(target_topic_id):
@@ -828,9 +853,8 @@ async def handle_admin_message(message: Message):
         return
 
     if message.text and message.text.startswith("//"):
-        return  # заметка
+        return
 
-    # Отправка контента пользователю
     try:
         if message.text:
             user_msg = await bot.send_message(user_id, message.text)
