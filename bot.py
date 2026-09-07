@@ -60,7 +60,6 @@ class RateStates(StatesGroup):
     waiting_for_comment = State()
 
 class ReportStates(StatesGroup):
-    waiting_for_admin = State()
     waiting_for_text = State()
 
 WELCOME_TEXT = (
@@ -74,6 +73,27 @@ WELCOME_TEXT = (
     "• тег своего админа;\n"
     "• цель сообщения: «общение» или «поддержка» (это поможет нам быть рядом именно так, как тебе сейчас нужно).\n\n"
     "Пусть здесь тебе будет спокойно — будто кто-то тихо держит тебя за руку и не торопит ни с ответами, ни с чувствами. 🤍"
+)
+
+RULES_TEXT = (
+    "⚡️⚡️⚡️⚡️⚡️⚡️⚡️\n"
+    "знаешь, я попробую объяснить это мягко.\n"
+    "здесь мы создаём место, где можно просто быть собой — без осуждения, без давления, с уважением и теплом.\n\n"
+    "✦  𝐀 𝐓 𝐌 𝐎 𝐒 𝐅 𝐄 𝐑 𝐀  ✦\n"
+    "1. 𖦹 Мы ценим тепло, дружелюбие и уважение.\n"
+    "2. 𖦹 Травля, буллинг и психологическое давление запрещены.\n"
+    "3. 𖦹 Мы — за спокойное, уютное и поддерживающее общение.\n\n"
+    "✦  𝐏 𝐎 𝐕 𝐄 𝐃 𝐄 𝐍 𝐈 𝐄  ✦\n"
+    "4. 𖦹 Запрещены спам, реклама, флуд и посторонние ссылки.\n"
+    "5. 𖦹 Контент 18+, угрозы и провокации — ведут к моментальному бану.\n\n"
+    "✦  𝐎 𝐁 𝐒 𝐇 𝐄 𝐍 𝐈 𝐄  ✦\n"
+    "6. 𖦹 Пиши понятно, уважительно и без излишней грубости.\n"
+    "7. 𖦹 Маты допустимы в умеренной форме, но без оскорблений.\n"
+    "8. 𖦹 Администрация — это голос порядка. В спорных ситуациях их слово решающее.\n"
+    "9. Не выпрашивать ЮЗ, номер админа, это запрещено.\n\n"
+    "⚠️ Нарушение этих правил может повлечь за собой предупреждение, мут или бан — без лишних объяснений.\n"
+    "Мы создаём пространство, где можно быть собой, не боясь осуждения.\n"
+    "Давайте беречь эту атмосферу вместе."
 )
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -157,7 +177,6 @@ async def load_data():
     admin_tags.update(PRESET_ADMIN_TAGS)
     admin_roles.update(PRESET_ADMIN_ROLES)
 
-    # Добавляем предустановленных админов в список
     for admin_id in PRESET_ADMIN_TAGS.keys():
         if admin_id not in owners:
             admins.add(admin_id)
@@ -564,7 +583,7 @@ async def handle_user_message(message: Message, state: FSMContext):
         await message.answer("Выберите категорию:", reply_markup=category_keyboard())
         return
     elif message.text == "📜 Правила общения":
-        await message.answer(rules_text)
+        await message.answer(RULES_TEXT)
         return
 
     if user_id not in user_topics:
@@ -752,27 +771,7 @@ async def process_category_selected(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "show_rules")
 async def process_show_rules(callback: CallbackQuery):
-    rules_text = (
-        "⚡️⚡️⚡️⚡️⚡️⚡️⚡️\n"
-        "знаешь, я попробую объяснить это мягко.\n"
-        "здесь мы создаём место, где можно просто быть собой — без осуждения, без давления, с уважением и теплом.\n\n"
-        "✦  𝐀 𝐓 𝐌 𝐎 𝐒 𝐅 𝐄 𝐑 𝐀  ✦\n"
-        "1. 𖦹 Мы ценим тепло, дружелюбие и уважение.\n"
-        "2. 𖦹 Травля, буллинг и психологическое давление запрещены.\n"
-        "3. 𖦹 Мы — за спокойное, уютное и поддерживающее общение.\n\n"
-        "✦  𝐏 𝐎 𝐕 𝐄 𝐃 𝐄 𝐍 𝐈 𝐄  ✦\n"
-        "4. 𖦹 Запрещены спам, реклама, флуд и посторонние ссылки.\n"
-        "5. 𖦹 Контент 18+, угрозы и провокации — ведут к моментальному бану.\n\n"
-        "✦  𝐎 𝐁 𝐒 𝐇 𝐄 𝐍 𝐈 𝐄  ✦\n"
-        "6. 𖦹 Пиши понятно, уважительно и без излишней грубости.\n"
-        "7. 𖦹 Маты допустимы в умеренной форме, но без оскорблений.\n"
-        "8. 𖦹 Администрация — это голос порядка. В спорных ситуациях их слово решающее.\n"
-        "9. Не выпрашивать ЮЗ, номер админа, это запрещено.\n\n"
-        "⚠️ Нарушение этих правил может повлечь за собой предупреждение, мут или бан — без лишних объяснений.\n"
-        "Мы создаём пространство, где можно быть собой, не боясь осуждения.\n"
-        "Давайте беречь эту атмосферу вместе."
-    )
-    await callback.message.edit_text(rules_text)
+    await callback.message.edit_text(RULES_TEXT)
     await callback.answer()
 
 # ---------- Рейтинг ----------
@@ -798,40 +797,16 @@ async def process_comment(message: Message, state: FSMContext):
     await message.answer("Спасибо за оценку!")
     await state.clear()
 
-# ---------- Репорт ----------
+# ---------- Репорт (упрощённый) ----------
 @dp.message(Command("report"))
-async def cmd_report(message: Message, state: FSMContext):
-    await message.answer("Выберите админа, на которого хотите пожаловаться:")
-    if not admins and not owners:
-        await message.answer("Нет доступных админов.")
-        return
-    buttons = []
-    for a in admins:
-        tag = admin_tags.get(a, "")
-        role = admin_roles.get(a, "")
-        name = f"{tag} — {role}" if tag and role else (tag or role or f"ID {a}")
-        buttons.append([InlineKeyboardButton(text=name, callback_data=f"reportadmin_{a}")])
-    for o in owners:
-        tag = admin_tags.get(o, "")
-        role = admin_roles.get(o, "")
-        name = f"{tag} — {role}" if tag and role else (tag or role or f"ID {o}")
-        buttons.append([InlineKeyboardButton(text=name + " 👑", callback_data=f"reportadmin_{o}")])
-    await message.answer("Кого хотите заreportить?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await state.set_state(ReportStates.waiting_for_admin)
-
-@dp.callback_query(ReportStates.waiting_for_admin, F.data.startswith("reportadmin_"))
-async def process_report_admin(callback: CallbackQuery, state: FSMContext):
-    admin_id = int(callback.data.split("_")[1])
-    await state.update_data(admin_id=admin_id)
-    await callback.message.edit_text("Опишите проблему:")
+async def cmd_report_simple(message: Message, state: FSMContext):
+    await message.answer("Пожалуйста, опишите вашу жалобу или проблему. Она будет отправлена владельцам бота.")
     await state.set_state(ReportStates.waiting_for_text)
-    await callback.answer()
 
 @dp.message(ReportStates.waiting_for_text)
 async def process_report_text(message: Message, state: FSMContext):
-    admin_id = (await state.get_data())["admin_id"]
     user_id = message.from_user.id
-    report_text = f"🚨 Репорт!\nОт пользователя: {user_id}\nНа админа: {admin_id}\nПричина: {message.text}"
+    report_text = f"🚨 Репорт от пользователя {user_id}:\n{message.text}"
     for o in owners:
         try:
             await bot.send_message(o, report_text)
@@ -839,6 +814,19 @@ async def process_report_text(message: Message, state: FSMContext):
             pass
     await message.answer("Спасибо, жалоба отправлена.")
     await state.clear()
+
+# ---------- Команда /stop ----------
+@dp.message(Command("stop"))
+async def cmd_stop(message: Message):
+    user_id = message.from_user.id
+    if user_id in user_topics:
+        topic_id = user_topics.pop(user_id)
+        try:
+            await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
+        except:
+            pass
+        await save_data()
+    await message.answer("Диалог завершён. Если захотите снова пообщаться, напишите /start.")
 
 # ---------- Обработка сообщений из тем (админы) ----------
 @dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
