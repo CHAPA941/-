@@ -95,7 +95,7 @@ RULES_TEXT = (
     "Давайте беречь эту атмосферу вместе."
 )
 
-def main_menu_keyboard() -> ReplyKeyboardMarkup:
+def main_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="👤 Выбрать админа"), KeyboardButton(text="📂 Выбрать категорию")],
@@ -104,7 +104,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-def category_keyboard() -> InlineKeyboardMarkup:
+def category_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Мальчик · Общение", callback_data="cat_male_comm"),
          InlineKeyboardButton(text="Мальчик · Поддержка", callback_data="cat_male_support")],
@@ -114,7 +114,7 @@ def category_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="Любой · Поддержка", callback_data="cat_any_support")]
     ])
 
-def rating_keyboard() -> InlineKeyboardMarkup:
+def rating_keyboard():
     buttons = []
     row = []
     for i in range(1, 11):
@@ -127,7 +127,6 @@ def rating_keyboard() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="Пропустить", callback_data="rate_skip")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ---------- Данные ----------
 async def load_data():
     global user_topics, blocked_users, admins, owners, all_users, admin_to_user_msg, user_to_admin_msg, user_rates, warns, mutes, admin_tags, admin_roles
     if JSONBLOB_URL:
@@ -205,7 +204,6 @@ async def save_data():
     except Exception as e:
         logging.error(f"Ошибка сохранения: {e}")
 
-# ---------- Вспомогательные ----------
 def parse_request(text: str):
     text_lower = text.lower()
     type_comm = None
@@ -229,7 +227,7 @@ def is_greeting(text: str) -> bool:
                 return True
     return False
 
-def get_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def get_keyboard(user_id: int):
     if user_id in blocked_users:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔓 Разблокировать", callback_data=f"unblock:{user_id}")]])
     return InlineKeyboardMarkup(inline_keyboard=[[
@@ -237,7 +235,7 @@ def get_keyboard(user_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="✅ Прочитать", callback_data=f"read:{user_id}")
     ]])
 
-def get_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def get_confirm_keyboard(user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Да, разблокировать", callback_data=f"confirm_unblock:{user_id}"),
         InlineKeyboardButton(text="❌ Нет", callback_data=f"cancel_unblock:{user_id}")
@@ -257,7 +255,6 @@ def get_rank(user_id: int) -> str:
     else:
         return "👤 Пользователь"
 
-# ---------- Команды ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(WELCOME_TEXT, reply_markup=main_menu_keyboard())
@@ -468,7 +465,6 @@ async def cmd_liststaff(message: Message):
     admins_list = ", ".join(map(str, admins)) if admins else "нет"
     await message.answer(f"👑 Владельцы: {owners_list}\n🛡️ Админы: {admins_list}")
 
-# ---------- Варны и муты ----------
 @dp.message(Command("warn"), F.chat.id == GROUP_ID)
 async def cmd_warn(message: Message):
     if not is_admin(message.from_user.id):
@@ -557,7 +553,6 @@ async def cmd_warns(message: Message):
         return
     await message.answer(f"Предупреждений: {warns.get(user_id, 0)}")
 
-# ---------- Личные сообщения ----------
 @dp.message(F.chat.type == "private")
 async def handle_user_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -664,7 +659,6 @@ async def handle_user_message(message: Message, state: FSMContext):
             logging.error(f"Ошибка отправки в тему: {e}")
             await message.answer("Не удалось отправить сообщение. Попробуй позже.")
 
-# ---------- Callback-обработчики ----------
 async def show_admin_buttons(message: Message):
     if not admins and not owners:
         await message.answer("Нет доступных админов.")
@@ -672,4 +666,309 @@ async def show_admin_buttons(message: Message):
     buttons = []
     for a in admins:
         tag = admin_tags.get(a, "")
-        role = admin_roles.get(a
+        role = admin_roles.get(a, "")
+        name = f"{tag} — {role}" if tag and role else (tag or role or f"ID {a}")
+        buttons.append([InlineKeyboardButton(text=name, callback_data=f"admin_{a}")])
+    for o in owners:
+        tag = admin_tags.get(o, "")
+        role = admin_roles.get(o, "")
+        name = f"{tag} — {role}" if tag and role else (tag or role or f"ID {o}")
+        buttons.append([InlineKeyboardButton(text=name + " 👑", callback_data=f"admin_{o}")])
+    await message.answer("Выберите администратора:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data == "choose_admin")
+async def process_choose_admin_callback(callback: CallbackQuery):
+    await callback.message.delete()
+    await show_admin_buttons(callback.message)
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def process_admin_selected(callback: CallbackQuery):
+    admin_id = int(callback.data.split("_")[1])
+    user_id = callback.from_user.id
+    username = callback.from_user.username or f"id{user_id}"
+    topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
+    topic_id = topic.message_thread_id
+    user_topics[user_id] = topic_id
+    await save_data()
+
+    admin_tag = admin_tags.get(admin_id, "")
+    admin_role = admin_roles.get(admin_id, "")
+    extra = "\n".join(filter(None, [
+        f"🏷 Тег: {admin_tag}" if admin_tag else "",
+        f"👔 Роль: {admin_role}" if admin_role else ""
+    ]))
+
+    info = (
+        f"🆕 Новый запрос!\n"
+        f"👤 Имя: {callback.from_user.full_name}\n"
+        f"🔖 Username: @{callback.from_user.username or 'нет'}\n"
+        f"📌 Тип: выбран админ (ID {admin_id})\n"
+        f"{extra}\n\n"
+        f"Начинайте общение. Сообщения без // будут отправлены пользователю."
+    )
+    await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
+    await bot.send_message(admin_id, f"Новый пользователь хочет общаться с вами. Тема: {topic_id}")
+    await bot.send_message(user_id, "Готово! Администратор уведомлён.")
+    await callback.message.delete()
+    await callback.answer()
+
+@dp.callback_query(F.data == "choose_category")
+async def process_choose_category(callback: CallbackQuery):
+    await callback.message.edit_text("Выберите категорию:", reply_markup=category_keyboard())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("cat_"))
+async def process_category_selected(callback: CallbackQuery):
+    cat = callback.data.split("_", 1)[1]
+    user_id = callback.from_user.id
+    username = callback.from_user.username or f"id{user_id}"
+
+    type_comm = None
+    admin_gender = None
+    if cat == "male_comm":
+        admin_gender = "Мальчик"
+        type_comm = "Общение"
+    elif cat == "male_support":
+        admin_gender = "Мальчик"
+        type_comm = "Поддержка"
+    elif cat == "female_comm":
+        admin_gender = "Девочка"
+        type_comm = "Общение"
+    elif cat == "female_support":
+        admin_gender = "Девочка"
+        type_comm = "Поддержка"
+    elif cat == "any_comm":
+        admin_gender = "Любой"
+        type_comm = "Общение"
+    elif cat == "any_support":
+        admin_gender = "Любой"
+        type_comm = "Поддержка"
+
+    topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
+    topic_id = topic.message_thread_id
+    user_topics[user_id] = topic_id
+    await save_data()
+
+    info = (
+        f"🆕 Новый запрос!\n"
+        f"👤 Имя: {callback.from_user.full_name}\n"
+        f"🔖 Username: @{callback.from_user.username or 'нет'}\n"
+        f"📌 Тип: {type_comm}\n"
+        f"🚻 Предпочтительный пол админа: {admin_gender}\n\n"
+        f"Начинайте общение. Сообщения без // будут отправлены пользователю."
+    )
+    await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
+    await bot.send_message(user_id, "Готово! Твой запрос принят. Администратор скоро свяжется с тобой.")
+    await callback.message.delete()
+    await callback.answer()
+
+@dp.callback_query(F.data == "show_rules")
+async def process_show_rules(callback: CallbackQuery):
+    await callback.message.edit_text(RULES_TEXT)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rate_"))
+async def process_rating(callback: CallbackQuery, state: FSMContext):
+    if callback.data == "rate_skip":
+        await callback.message.edit_text("Спасибо за обратную связь!")
+        await callback.answer()
+        return
+    rating = int(callback.data.split("_")[1])
+    await state.update_data(rating=rating)
+    await callback.message.edit_text("Пожалуйста, оставьте комментарий (или отправьте /skip):")
+    await state.set_state(RateStates.waiting_for_comment)
+    await callback.answer()
+
+@dp.message(RateStates.waiting_for_comment)
+async def process_comment(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    rating = (await state.get_data()).get("rating")
+    comment = "" if message.text == "/skip" else message.text
+    user_rates[user_id] = {"rating": rating, "comment": comment}
+    await save_data()
+    await message.answer("Спасибо за оценку!")
+    await state.clear()
+
+@dp.message(Command("report"))
+async def cmd_report_simple(message: Message, state: FSMContext):
+    await message.answer("Пожалуйста, опишите вашу жалобу или проблему. Она будет отправлена владельцам бота.")
+    await state.set_state(ReportStates.waiting_for_text)
+
+@dp.message(ReportStates.waiting_for_text)
+async def process_report_text(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    report_text = f"🚨 Репорт от пользователя {user_id}:\n{message.text}"
+    for o in owners:
+        try:
+            await bot.send_message(o, report_text)
+        except:
+            pass
+    await message.answer("Спасибо, жалоба отправлена.")
+    await state.clear()
+
+@dp.message(Command("stop"))
+async def cmd_stop(message: Message):
+    user_id = message.from_user.id
+    if user_id in user_topics:
+        topic_id = user_topics.pop(user_id)
+        try:
+            await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
+        except:
+            pass
+        await save_data()
+    await message.answer("Диалог завершён. Если захотите снова пообщаться, напишите /start.")
+
+@dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
+async def handle_admin_message(message: Message):
+    if message.from_user.is_bot or message.is_topic_message is False:
+        return
+    if message.text and message.text.startswith('/'):
+        return
+    topic_id = message.message_thread_id
+    user_id = next((uid for uid, tid in user_topics.items() if tid == topic_id), None)
+    if user_id is None:
+        return
+
+    if message.text and message.text.startswith("//"):
+        return
+
+    try:
+        if message.text:
+            user_msg = await bot.send_message(user_id, message.text)
+            admin_to_user_msg[(topic_id, message.message_id)] = user_msg.message_id
+            await save_data()
+        elif message.voice:
+            await bot.send_voice(user_id, message.voice.file_id)
+        elif message.video_note:
+            await bot.send_video_note(user_id, message.video_note.file_id)
+        elif message.video:
+            await bot.send_video(user_id, message.video.file_id)
+        elif message.photo:
+            await bot.send_photo(user_id, message.photo[-1].file_id)
+        elif message.document:
+            await bot.send_document(user_id, message.document.file_id)
+        elif message.sticker:
+            await bot.send_sticker(user_id, message.sticker.file_id)
+        else:
+            await bot.copy_message(user_id, message.chat.id, message.message_id)
+    except Exception as e:
+        logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+
+@dp.edited_message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
+async def handle_admin_edited_message(message: Message):
+    if message.from_user.is_bot:
+        return
+    topic_id = message.message_thread_id
+    user_id = next((uid for uid, tid in user_topics.items() if tid == topic_id), None)
+    if user_id is None:
+        return
+    key = (topic_id, message.message_id)
+    user_message_id = admin_to_user_msg.get(key)
+    if not user_message_id:
+        return
+    new_text = message.text or ""
+    if new_text.startswith("//"):
+        return
+    try:
+        await bot.edit_message_text(chat_id=user_id, message_id=user_message_id, text=new_text)
+    except Exception as e:
+        logging.error(f"Не удалось отредактировать сообщение у пользователя: {e}")
+
+@dp.edited_message(F.chat.type == "private")
+async def handle_user_edited_message(message: Message):
+    user_id = message.from_user.id
+    topic_id = user_topics.get(user_id)
+    if not topic_id:
+        return
+    key = (user_id, message.message_id)
+    admin_message_id = user_to_admin_msg.get(key)
+    if not admin_message_id:
+        return
+    new_text = message.text or ""
+    try:
+        await bot.edit_message_text(chat_id=GROUP_ID, message_id=admin_message_id, text=new_text)
+    except Exception as e:
+        logging.error(f"Не удалось отредактировать сообщение в теме: {e}")
+
+@dp.callback_query(F.data.startswith("block:"))
+async def process_block_button(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    if user_id not in blocked_users:
+        blocked_users.add(user_id)
+        await save_data()
+        try:
+            await bot.send_message(user_id, "Вы были заблокированы.")
+        except:
+            pass
+        await callback.message.edit_text(callback.message.text + "\n\n🔒 Заблокирован", reply_markup=get_keyboard(user_id))
+        await callback.answer("Пользователь заблокирован")
+    else:
+        await callback.answer("Пользователь уже заблокирован")
+
+@dp.callback_query(F.data.startswith("unblock:"))
+async def process_unblock_button(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    await callback.message.edit_text(callback.message.text + "\n\n❓ Вы точно хотите разблокировать?", reply_markup=get_confirm_keyboard(user_id))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("confirm_unblock:"))
+async def process_confirm_unblock(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    if user_id in blocked_users:
+        blocked_users.discard(user_id)
+        await save_data()
+        try:
+            await bot.send_message(user_id, "Вы были разблокированы.")
+        except:
+            pass
+        lines = callback.message.text.split('\n')
+        while lines and lines[-1].startswith(('🔒', '❓')):
+            lines.pop()
+        clean_text = '\n'.join(lines)
+        await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id))
+        await callback.answer("Пользователь разблокирован")
+    else:
+        await callback.answer("Пользователь не заблокирован")
+
+@dp.callback_query(F.data.startswith("cancel_unblock:"))
+async def process_cancel_unblock(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    lines = callback.message.text.split('\n')
+    if lines and lines[-1].startswith('❓'):
+        lines.pop()
+    clean_text = '\n'.join(lines)
+    await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("read:"))
+async def process_read_button(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    try:
+        await bot.send_message(user_id, "Ваш запрос прочитан, скоро с вами свяжутся.")
+    except:
+        pass
+    await callback.answer("Запрос отмечен как прочитанный")
+    try:
+        await callback.message.edit_text(callback.message.text + "\n\n✅ Прочитано", reply_markup=None)
+    except:
+        pass
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    await load_data()
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    polling_task = asyncio.create_task(dp.start_polling(bot))
+
+    app = web.Application()
+    app.router.add_get('/', lambda request: web.Response(text="Bot is running"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    logging.info(f"Web server started on port {PORT}")
+
+    await polling_task
+
+if __name__ == "__main__":
+    asyncio.run(main())
