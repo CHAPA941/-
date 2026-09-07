@@ -31,7 +31,7 @@ PRESET_ADMIN_TAGS = {
     2087257865: "#чапа",
 }
 
-# Предустановленные роли для известных ID (можно поправить)
+# Предустановленные роли
 PRESET_ADMIN_ROLES = {
     7790900154: "Влд",
     8275375761: "адм.универсал",
@@ -161,9 +161,14 @@ async def load_data():
                 except ValueError:
                     logging.error(f"Неверный формат ADMIN_ROLES_ENV: {pair}")
 
-    # Предустановленные значения (не перезаписывают, если уже есть)
+    # Предустановленные значения
     admin_tags.update(PRESET_ADMIN_TAGS)
     admin_roles.update(PRESET_ADMIN_ROLES)
+
+    # Добавляем всех админов из предустановленных тегов в admins (если они не владельцы)
+    for admin_id in PRESET_ADMIN_TAGS.keys():
+        if admin_id not in owners:
+            admins.add(admin_id)
 
 async def save_data():
     if not JSONBLOB_URL:
@@ -190,7 +195,7 @@ async def save_data():
     except Exception as e:
         logging.error(f"Ошибка сохранения: {e}")
 
-# ---------- Вспомогательные ----------
+# ---------- Вспомогательные функции ----------
 def parse_request(text: str):
     text_lower = text.lower()
     type_comm = None
@@ -354,6 +359,11 @@ async def cmd_clear(message: Message):
     admin_roles.clear()
     admin_tags.update(PRESET_ADMIN_TAGS)
     admin_roles.update(PRESET_ADMIN_ROLES)
+    # Добавляем админов из предустановленных тегов
+    admins.clear()
+    for admin_id in PRESET_ADMIN_TAGS.keys():
+        if admin_id not in owners:
+            admins.add(admin_id)
     await save_data()
     await message.answer("Все данные сброшены.")
 
@@ -682,7 +692,7 @@ async def handle_user_message(message: Message, state: FSMContext):
             logging.error(f"Ошибка отправки сообщения в тему {topic_id}: {e}")
             await message.answer("Не удалось отправить сообщение. Попробуй позже.")
 
-# ---------- Callback-обработчики ----------
+# ---------- Callback-обработчики кнопок ----------
 async def process_choose_admin_from_message(message: Message):
     if not admins and not owners:
         await message.answer("Нет доступных админов.")
