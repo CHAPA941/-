@@ -19,8 +19,9 @@ PORT = int(os.getenv("PORT", 10000))
 OWNER_IDS = set(map(int, (os.getenv("OWNER_IDS", "") or "").split(",") if os.getenv("OWNER_IDS") else []))
 JSONBLOB_URL = os.getenv("JSONBLOB_URL", "")
 ADMIN_TAGS_ENV = os.getenv("ADMIN_TAGS", "")
+ADMIN_ROLES_ENV = os.getenv("ADMIN_ROLES", "")
 
-# Предустановленные теги (можно дополнить через ADMIN_TAGS_ENV)
+# Предустановленные теги
 PRESET_ADMIN_TAGS = {
     7790900154: "#серафим",
     8275375761: "#лютик",
@@ -28,6 +29,16 @@ PRESET_ADMIN_TAGS = {
     5934330035: "#линг",
     5305234519: "#призрак",
     2087257865: "#чапа",
+}
+
+# Предустановленные роли для известных ID (можно поправить)
+PRESET_ADMIN_ROLES = {
+    7790900154: "Влд",
+    8275375761: "адм.универсал",
+    8814107258: "адм.общение",
+    5934330035: "адм.универсал",
+    5305234519: "адм.универсал",
+    2087257865: "адм.общение",
 }
 
 bot = Bot(token=BOT_TOKEN)
@@ -43,7 +54,8 @@ user_to_admin_msg = {}
 user_rates = {}
 warns = {}
 mutes = {}
-admin_tags = {}  # user_id -> тег
+admin_tags = {}   # user_id -> тег
+admin_roles = {}  # user_id -> роль
 
 class RateStates(StatesGroup):
     waiting_for_rating = State()
@@ -97,10 +109,9 @@ def rating_keyboard() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="Пропустить", callback_data="rate_skip")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# Загрузка и сохранение данных
+# ---------- Данные ----------
 async def load_data():
-    global user_topics, blocked_users, admins, owners, all_users, admin_to_user_msg, user_to_admin_msg, user_rates, warns, mutes, admin_tags
-    # Загрузка из JsonBlob
+    global user_topics, blocked_users, admins, owners, all_users, admin_to_user_msg, user_to_admin_msg, user_rates, warns, mutes, admin_tags, admin_roles
     if JSONBLOB_URL:
         try:
             async with aiohttp.ClientSession() as session:
@@ -118,14 +129,17 @@ async def load_data():
                         warns = {int(k): v for k, v in data.get("warns", {}).items()}
                         mutes = {int(k): datetime.fromisoformat(v) for k, v in data.get("mutes", {}).items()}
                         admin_tags = {int(k): v for k, v in data.get("admin_tags", {}).items()}
+                        admin_roles = {int(k): v for k, v in data.get("admin_roles", {}).items()}
                         logging.info("Данные загружены из JsonBlob")
                     else:
                         logging.error(f"Ошибка загрузки из JsonBlob: {resp.status}")
         except Exception as e:
             logging.error(f"Ошибка загрузки данных из JsonBlob: {e}")
+
     # Владельцы из окружения
     owners.update(OWNER_IDS)
-    # Теги из окружения ADMIN_TAGS_ENV
+
+    # Теги из окружения
     if ADMIN_TAGS_ENV:
         for pair in ADMIN_TAGS_ENV.split(","):
             parts = pair.split(":")
@@ -135,8 +149,21 @@ async def load_data():
                     admin_tags[admin_id] = parts[1]
                 except ValueError:
                     logging.error(f"Неверный формат ADMIN_TAGS_ENV: {pair}")
-    # Предустановленные теги (перезаписывают, если их нет)
+
+    # Роли из окружения
+    if ADMIN_ROLES_ENV:
+        for pair in ADMIN_ROLES_ENV.split(","):
+            parts = pair.split(":")
+            if len(parts) >= 2:
+                try:
+                    admin_id = int(parts[0])
+                    admin_roles[admin_id] = parts[1]
+                except ValueError:
+                    logging.error(f"Неверный формат ADMIN_ROLES_ENV: {pair}")
+
+    # Предустановленные значения (не перезаписывают, если уже есть)
     admin_tags.update(PRESET_ADMIN_TAGS)
+    admin_roles.update(PRESET_ADMIN_ROLES)
 
 async def save_data():
     if not JSONBLOB_URL:
@@ -152,7 +179,8 @@ async def save_data():
         "user_rates": user_rates,
         "warns": {str(k): v for k, v in warns.items()},
         "mutes": {str(k): v.isoformat() for k, v in mutes.items()},
-        "admin_tags": {str(k): v for k, v in admin_tags.items()}
+        "admin_tags": {str(k): v for k, v in admin_tags.items()},
+        "admin_roles": {str(k): v for k, v in admin_roles.items()}
     }
     try:
         async with aiohttp.ClientSession() as session:
@@ -162,6 +190,7 @@ async def save_data():
     except Exception as e:
         logging.error(f"Ошибка сохранения: {e}")
 
+# ---------- Вспомогательные ----------
 def parse_request(text: str):
     text_lower = text.lower()
     type_comm = None
@@ -241,6 +270,7 @@ async def cmd_help(message: Message):
         "Команды владельца:\n"
         "/setrank <user_id> <admin|owner> - назначить ранг\n"
         "/settag <user_id> <тег> - установить тег админа\n"
+        "/setrole <user_id> <роль> - установить роль админа\n"
         "/removerank <user_id> - снять ранг\n"
         "/liststaff - показать всех владельцев и админов\n"
         "/clear - сбросить все данные (осторожно!)\n"
@@ -321,7 +351,9 @@ async def cmd_clear(message: Message):
     warns.clear()
     mutes.clear()
     admin_tags.clear()
+    admin_roles.clear()
     admin_tags.update(PRESET_ADMIN_TAGS)
+    admin_roles.update(PRESET_ADMIN_ROLES)
     await save_data()
     await message.answer("Все данные сброшены.")
 
@@ -391,6 +423,25 @@ async def cmd_settag(message: Message):
     admin_tags[target_id] = tag
     await save_data()
     await message.answer(f"Тег '{tag}' установлен для пользователя {target_id}")
+
+@dp.message(Command("setrole"), F.chat.id == GROUP_ID)
+async def cmd_setrole(message: Message):
+    if not is_owner(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав. Команда доступна только владельцу.")
+        return
+    args = message.text.split(maxsplit=2)
+    if len(args) != 3:
+        await message.answer("Формат: /setrole <user_id> <роль>")
+        return
+    try:
+        target_id = int(args[1])
+        role = args[2]
+    except:
+        await message.answer("Неверный user_id.")
+        return
+    admin_roles[target_id] = role
+    await save_data()
+    await message.answer(f"Роль '{role}' установлена для пользователя {target_id}")
 
 @dp.message(Command("removerank"), F.chat.id == GROUP_ID)
 async def cmd_removerank(message: Message):
@@ -631,32 +682,44 @@ async def handle_user_message(message: Message, state: FSMContext):
             logging.error(f"Ошибка отправки сообщения в тему {topic_id}: {e}")
             await message.answer("Не удалось отправить сообщение. Попробуй позже.")
 
-# ---------- Callback-обработчики кнопок ----------
+# ---------- Callback-обработчики ----------
 async def process_choose_admin_from_message(message: Message):
     if not admins and not owners:
         await message.answer("Нет доступных админов.")
         return
     buttons = []
     for a in admins:
-        if a in admin_tags:
-            name = admin_tags[a]
+        tag = admin_tags.get(a, "")
+        role = admin_roles.get(a, "")
+        if tag:
+            name = f"{tag} — {role}" if role else tag
         else:
             try:
                 user = await bot.get_chat(a)
                 name = f"@{user.username}" if user.username else f"ID {a}"
+                if role:
+                    name += f" — {role}"
             except:
                 name = f"ID {a}"
+                if role:
+                    name += f" — {role}"
         buttons.append([InlineKeyboardButton(text=name, callback_data=f"admin_{a}")])
     for o in owners:
-        if o in admin_tags:
-            name = admin_tags[o] + " 👑"
+        tag = admin_tags.get(o, "")
+        role = admin_roles.get(o, "")
+        if tag:
+            name = f"{tag} — {role}" if role else tag
         else:
             try:
                 user = await bot.get_chat(o)
                 name = f"@{user.username}" if user.username else f"ID {o}"
+                if role:
+                    name += f" — {role}"
             except:
                 name = f"ID {o}"
-        buttons.append([InlineKeyboardButton(text=name, callback_data=f"admin_{o}")])
+                if role:
+                    name += f" — {role}"
+        buttons.append([InlineKeyboardButton(text=name + " 👑", callback_data=f"admin_{o}")])
     await message.answer("Выберите администратора:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data == "choose_admin")
@@ -675,14 +738,17 @@ async def process_admin_selected(callback: CallbackQuery):
     await save_data()
 
     admin_tag = admin_tags.get(admin_id, "")
+    admin_role = admin_roles.get(admin_id, "")
     tag_info = f"🏷 Тег: {admin_tag}" if admin_tag else ""
+    role_info = f"👔 Роль: {admin_role}" if admin_role else ""
+    extra = "\n".join(filter(None, [tag_info, role_info]))
 
     info = (
         f"🆕 Новый запрос!\n"
         f"👤 Имя: {callback.from_user.full_name}\n"
         f"🔖 Username: @{callback.from_user.username or 'нет'}\n"
         f"📌 Тип: выбран админ (ID {admin_id})\n"
-        f"{tag_info}\n\n"
+        f"{extra}\n\n"
         f"Начинайте общение. Сообщения без // будут отправлены пользователю."
     )
     await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
@@ -802,25 +868,37 @@ async def cmd_report(message: Message, state: FSMContext):
         return
     buttons = []
     for a in admins:
-        if a in admin_tags:
-            name = admin_tags[a]
+        tag = admin_tags.get(a, "")
+        role = admin_roles.get(a, "")
+        if tag:
+            name = f"{tag} — {role}" if role else tag
         else:
             try:
                 user = await bot.get_chat(a)
                 name = f"@{user.username}" if user.username else f"ID {a}"
+                if role:
+                    name += f" — {role}"
             except:
                 name = f"ID {a}"
+                if role:
+                    name += f" — {role}"
         buttons.append([InlineKeyboardButton(text=name, callback_data=f"reportadmin_{a}")])
     for o in owners:
-        if o in admin_tags:
-            name = admin_tags[o] + " 👑"
+        tag = admin_tags.get(o, "")
+        role = admin_roles.get(o, "")
+        if tag:
+            name = f"{tag} — {role}" if role else tag
         else:
             try:
                 user = await bot.get_chat(o)
                 name = f"@{user.username}" if user.username else f"ID {o}"
+                if role:
+                    name += f" — {role}"
             except:
                 name = f"ID {o}"
-        buttons.append([InlineKeyboardButton(text=name, callback_data=f"reportadmin_{o}")])
+                if role:
+                    name += f" — {role}"
+        buttons.append([InlineKeyboardButton(text=name + " 👑", callback_data=f"reportadmin_{o}")])
     await message.answer("Кого хотите заreportить?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(ReportStates.waiting_for_admin)
 
