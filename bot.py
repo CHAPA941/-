@@ -554,6 +554,30 @@ async def cmd_warns(message: Message):
         return
     await message.answer(f"Предупреждений: {warns.get(user_id, 0)}")
 
+# ---------- Команда rank ----------
+@dp.message(Command("rank"))
+async def cmd_rank(message: Message):
+    user_id_to_check = None
+    if message.chat.type in ["group", "supergroup"] and message.message_thread_id:
+        topic_id = message.message_thread_id
+        for uid, tid in user_topics.items():
+            if tid == topic_id:
+                user_id_to_check = uid
+                break
+    args = message.text.split()
+    if len(args) == 2:
+        try:
+            user_id_to_check = int(args[1])
+        except:
+            pass
+    if user_id_to_check is None and message.chat.type == "private":
+        user_id_to_check = message.from_user.id
+    if user_id_to_check is None:
+        await message.answer("Не удалось определить пользователя. Используй /rank <user_id>")
+        return
+    rank = get_rank(user_id_to_check)
+    await message.answer(f"Ранг пользователя {user_id_to_check}: {rank}")
+
 # ---------- Репорт ----------
 @dp.message(Command("report"))
 async def cmd_report_simple(message: Message, state: FSMContext):
@@ -585,11 +609,10 @@ async def cmd_stop(message: Message):
         await save_data()
     await message.answer("Диалог завершён. Если захотите снова пообщаться, напишите /start.")
 
-# ---------- Личные сообщения ----------
+# ---------- Обработка личных сообщений ----------
 @dp.message(F.chat.type == "private")
 async def handle_user_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    # Игнорируем команды, они обрабатываются отдельными хендлерами
     if message.text and message.text.startswith('/'):
         return
 
