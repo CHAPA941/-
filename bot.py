@@ -255,6 +255,7 @@ def get_rank(user_id: int) -> str:
     else:
         return "👤 Пользователь"
 
+# ---------- Команды ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(WELCOME_TEXT, reply_markup=main_menu_keyboard())
@@ -272,7 +273,7 @@ async def cmd_help(message: Message):
         "/unblock - разблокировать пользователя\n"
         "/warn - выдать предупреждение\n"
         "/mute <число> <минут|часов|дней> <причина> - замутить\n"
-        "/unmute - размутить\n"
+        "/unmute или /размут - размутить\n"
         "/warns - посмотреть предупреждения\n"
         "/myrank - свой ранг\n\n"
         "Команды владельца:\n"
@@ -524,7 +525,7 @@ async def cmd_mute_ru(message: Message):
     reason_text = f"\nПричина: {reason}" if reason else ""
     await message.answer(f"🔇 Пользователь замучен до {until.strftime('%H:%M')}{reason_text}")
 
-@dp.message(Command("unmute"), F.chat.id == GROUP_ID)
+@dp.message(F.chat.id == GROUP_ID, F.text.lower().in_(["/unmute", "/размут"]))
 async def cmd_unmute(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Недостаточно прав.")
@@ -553,9 +554,45 @@ async def cmd_warns(message: Message):
         return
     await message.answer(f"Предупреждений: {warns.get(user_id, 0)}")
 
+# ---------- Репорт ----------
+@dp.message(Command("report"))
+async def cmd_report_simple(message: Message, state: FSMContext):
+    await message.answer("Пожалуйста, опишите вашу жалобу или проблему. Она будет отправлена владельцам бота.")
+    await state.set_state(ReportStates.waiting_for_text)
+
+@dp.message(ReportStates.waiting_for_text)
+async def process_report_text(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    report_text = f"🚨 Репорт от пользователя {user_id}:\n{message.text}"
+    for o in owners:
+        try:
+            await bot.send_message(o, report_text)
+        except:
+            pass
+    await message.answer("Спасибо, жалоба отправлена.")
+    await state.clear()
+
+# ---------- Команда /stop ----------
+@dp.message(Command("stop"))
+async def cmd_stop(message: Message):
+    user_id = message.from_user.id
+    if user_id in user_topics:
+        topic_id = user_topics.pop(user_id)
+        try:
+            await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
+        except:
+            pass
+        await save_data()
+    await message.answer("Диалог завершён. Если захотите снова пообщаться, напишите /start.")
+
+# ---------- Личные сообщения ----------
 @dp.message(F.chat.type == "private")
 async def handle_user_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    # Игнорируем команды, они обрабатываются отдельными хендлерами
+    if message.text and message.text.startswith('/'):
+        return
+
     all_users.add(user_id)
     await save_data()
 
@@ -788,35 +825,6 @@ async def process_comment(message: Message, state: FSMContext):
     await save_data()
     await message.answer("Спасибо за оценку!")
     await state.clear()
-
-@dp.message(Command("report"))
-async def cmd_report_simple(message: Message, state: FSMContext):
-    await message.answer("Пожалуйста, опишите вашу жалобу или проблему. Она будет отправлена владельцам бота.")
-    await state.set_state(ReportStates.waiting_for_text)
-
-@dp.message(ReportStates.waiting_for_text)
-async def process_report_text(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    report_text = f"🚨 Репорт от пользователя {user_id}:\n{message.text}"
-    for o in owners:
-        try:
-            await bot.send_message(o, report_text)
-        except:
-            pass
-    await message.answer("Спасибо, жалоба отправлена.")
-    await state.clear()
-
-@dp.message(Command("stop"))
-async def cmd_stop(message: Message):
-    user_id = message.from_user.id
-    if user_id in user_topics:
-        topic_id = user_topics.pop(user_id)
-        try:
-            await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
-        except:
-            pass
-        await save_data()
-    await message.answer("Диалог завершён. Если захотите снова пообщаться, напишите /start.")
 
 @dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
 async def handle_admin_message(message: Message):
