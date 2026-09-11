@@ -53,6 +53,7 @@ warns = {}
 mutes = {}
 admin_tags = {}
 admin_roles = {}
+read_status = {}  # user_id -> True/False (прочитано ли)
 
 class RateStates(StatesGroup):
     waiting_for_rating = State()
@@ -127,8 +128,43 @@ def rating_keyboard():
     buttons.append([InlineKeyboardButton(text="Пропустить", callback_data="rate_skip")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def get_keyboard(user_id: int, read: bool = False):
+    """Клавиатура карточки запроса с учётом блокировки и прочтения."""
+    if user_id in blocked_users:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔓 Разблокировать", callback_data=f"unblock:{user_id}")]
+        ])
+    if read:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ Отменить прочтение", callback_data=f"unread:{user_id}")]
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔒 Заблокировать", callback_data=f"block:{user_id}"),
+        InlineKeyboardButton(text="✅ Прочитать", callback_data=f"read:{user_id}")
+    ]])
+
+def get_confirm_keyboard(user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, разблокировать", callback_data=f"confirm_unblock:{user_id}"),
+        InlineKeyboardButton(text="❌ Нет", callback_data=f"cancel_unblock:{user_id}")
+    ]])
+
+def is_owner(user_id: int) -> bool:
+    return user_id in owners
+
+def is_admin(user_id: int) -> bool:
+    return user_id in admins or is_owner(user_id)
+
+def get_rank(user_id: int) -> str:
+    if is_owner(user_id):
+        return "👑 Владелец"
+    elif is_admin(user_id):
+        return "🛡️ Админ"
+    else:
+        return "👤 Пользователь"
+
 async def load_data():
-    global user_topics, blocked_users, admins, owners, all_users, admin_to_user_msg, user_to_admin_msg, user_rates, warns, mutes, admin_tags, admin_roles
+    global user_topics, blocked_users, admins, owners, all_users, admin_to_user_msg, user_to_admin_msg, user_rates, warns, mutes, admin_tags, admin_roles, read_status
     if JSONBLOB_URL:
         try:
             async with aiohttp.ClientSession() as session:
@@ -147,11 +183,11 @@ async def load_data():
                         mutes = {int(k): datetime.fromisoformat(v) for k, v in data.get("mutes", {}).items()}
                         admin_tags = {int(k): v for k, v in data.get("admin_tags", {}).items()}
                         admin_roles = {int(k): v for k, v in data.get("admin_roles", {}).items()}
+                        read_status = {int(k): v for k, v in data.get("read_status", {}).items()}
         except Exception as e:
             logging.error(f"Ошибка загрузки из JsonBlob: {e}")
 
     owners.update(OWNER_IDS)
-
     if ADMIN_TAGS_ENV:
         for pair in ADMIN_TAGS_ENV.split(","):
             parts = pair.split(":")
@@ -161,7 +197,6 @@ async def load_data():
                     admin_tags[admin_id] = parts[1]
                 except ValueError:
                     pass
-
     if ADMIN_ROLES_ENV:
         for pair in ADMIN_ROLES_ENV.split(","):
             parts = pair.split(":")
@@ -171,10 +206,8 @@ async def load_data():
                     admin_roles[admin_id] = parts[1]
                 except ValueError:
                     pass
-
     admin_tags.update(PRESET_ADMIN_TAGS)
     admin_roles.update(PRESET_ADMIN_ROLES)
-
     for admin_id in PRESET_ADMIN_TAGS.keys():
         if admin_id not in owners:
             admins.add(admin_id)
@@ -194,7 +227,8 @@ async def save_data():
         "warns": {str(k): v for k, v in warns.items()},
         "mutes": {str(k): v.isoformat() for k, v in mutes.items()},
         "admin_tags": {str(k): v for k, v in admin_tags.items()},
-        "admin_roles": {str(k): v for k, v in admin_roles.items()}
+        "admin_roles": {str(k): v for k, v in admin_roles.items()},
+        "read_status": {str(k): v for k, v in read_status.items()}
     }
     try:
         async with aiohttp.ClientSession() as session:
@@ -227,35 +261,7 @@ def is_greeting(text: str) -> bool:
                 return True
     return False
 
-def get_keyboard(user_id: int):
-    if user_id in blocked_users:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔓 Разблокировать", callback_data=f"unblock:{user_id}")]])
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🔒 Заблокировать", callback_data=f"block:{user_id}"),
-        InlineKeyboardButton(text="✅ Прочитать", callback_data=f"read:{user_id}")
-    ]])
-
-def get_confirm_keyboard(user_id: int):
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Да, разблокировать", callback_data=f"confirm_unblock:{user_id}"),
-        InlineKeyboardButton(text="❌ Нет", callback_data=f"cancel_unblock:{user_id}")
-    ]])
-
-def is_owner(user_id: int) -> bool:
-    return user_id in owners
-
-def is_admin(user_id: int) -> bool:
-    return user_id in admins or is_owner(user_id)
-
-def get_rank(user_id: int) -> str:
-    if is_owner(user_id):
-        return "👑 Владелец"
-    elif is_admin(user_id):
-        return "🛡️ Админ"
-    else:
-        return "👤 Пользователь"
-
-# ---------- Команды ----------
+# ---------- КОМАНДЫ ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(WELCOME_TEXT, reply_markup=main_menu_keyboard())
@@ -322,6 +328,7 @@ async def cmd_close(message: Message):
             user_topics.pop(user_id, None)
             admin_to_user_msg = {k: v for k, v in admin_to_user_msg.items() if k[0] != topic_id}
             user_to_admin_msg = {k: v for k, v in user_to_admin_msg.items() if k[0] != user_id}
+            read_status.pop(user_id, None)
             await save_data()
             await message.answer("Тема удалена.")
             await bot.send_message(user_id, "Пожалуйста, оцените работу администратора от 1 до 10:", reply_markup=rating_keyboard())
@@ -346,6 +353,7 @@ async def cmd_clear(message: Message):
     mutes.clear()
     admin_tags.clear()
     admin_roles.clear()
+    read_status.clear()
     admin_tags.update(PRESET_ADMIN_TAGS)
     admin_roles.update(PRESET_ADMIN_ROLES)
     admins.clear()
@@ -554,7 +562,6 @@ async def cmd_warns(message: Message):
         return
     await message.answer(f"Предупреждений: {warns.get(user_id, 0)}")
 
-# ---------- Команда rank ----------
 @dp.message(Command("rank"))
 async def cmd_rank(message: Message):
     user_id_to_check = None
@@ -578,7 +585,6 @@ async def cmd_rank(message: Message):
     rank = get_rank(user_id_to_check)
     await message.answer(f"Ранг пользователя {user_id_to_check}: {rank}")
 
-# ---------- Репорт ----------
 @dp.message(Command("report"))
 async def cmd_report_simple(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, опишите вашу жалобу или проблему. Она будет отправлена владельцам бота.")
@@ -596,7 +602,6 @@ async def process_report_text(message: Message, state: FSMContext):
     await message.answer("Спасибо, жалоба отправлена.")
     await state.clear()
 
-# ---------- Команда /stop ----------
 @dp.message(Command("stop"))
 async def cmd_stop(message: Message):
     user_id = message.from_user.id
@@ -606,10 +611,11 @@ async def cmd_stop(message: Message):
             await bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic_id)
         except:
             pass
+        read_status.pop(user_id, None)
         await save_data()
     await message.answer("Диалог завершён. Если захотите снова пообщаться, напишите /start.")
 
-# ---------- Обработка личных сообщений ----------
+# ---------- Личные сообщения ----------
 @dp.message(F.chat.type == "private")
 async def handle_user_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -653,6 +659,7 @@ async def handle_user_message(message: Message, state: FSMContext):
                 topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
                 topic_id = topic.message_thread_id
                 user_topics[user_id] = topic_id
+                read_status[user_id] = False
                 await save_data()
 
                 info = (
@@ -663,7 +670,7 @@ async def handle_user_message(message: Message, state: FSMContext):
                     f"🚻 Предпочтительный пол админа: {admin_gender}\n\n"
                     f"Начинайте общение. Сообщения без // будут отправлены пользователю."
                 )
-                await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
+                await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id, read=False))
                 await message.answer("Готово! Твой запрос принят. Администратор скоро свяжется с тобой.")
             except Exception as e:
                 logging.error(f"Не удалось создать тему: {e}")
@@ -709,7 +716,7 @@ async def handle_user_message(message: Message, state: FSMContext):
                 user_topics[user_id] = new_topic_id
                 await save_data()
                 info = f"🔄 Восстановление темы после удаления.\n👤 Имя: {message.from_user.full_name}\n🔖 Username: @{message.from_user.username or 'нет'}\n"
-                await bot.send_message(GROUP_ID, info, message_thread_id=new_topic_id, reply_markup=get_keyboard(user_id))
+                await bot.send_message(GROUP_ID, info, message_thread_id=new_topic_id, reply_markup=get_keyboard(user_id, read=False))
                 await send_media_to_topic(new_topic_id)
                 await message.answer("Тема была пересоздана, администраторы получили твоё сообщение.")
             except Exception as e2:
@@ -749,6 +756,7 @@ async def process_admin_selected(callback: CallbackQuery):
     topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
     topic_id = topic.message_thread_id
     user_topics[user_id] = topic_id
+    read_status[user_id] = False
     await save_data()
 
     admin_tag = admin_tags.get(admin_id, "")
@@ -766,7 +774,7 @@ async def process_admin_selected(callback: CallbackQuery):
         f"{extra}\n\n"
         f"Начинайте общение. Сообщения без // будут отправлены пользователю."
     )
-    await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
+    await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id, read=False))
     await bot.send_message(admin_id, f"Новый пользователь хочет общаться с вами. Тема: {topic_id}")
     await bot.send_message(user_id, "Готово! Администратор уведомлён.")
     await callback.message.delete()
@@ -807,6 +815,7 @@ async def process_category_selected(callback: CallbackQuery):
     topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
     topic_id = topic.message_thread_id
     user_topics[user_id] = topic_id
+    read_status[user_id] = False
     await save_data()
 
     info = (
@@ -817,7 +826,7 @@ async def process_category_selected(callback: CallbackQuery):
         f"🚻 Предпочтительный пол админа: {admin_gender}\n\n"
         f"Начинайте общение. Сообщения без // будут отправлены пользователю."
     )
-    await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id))
+    await bot.send_message(GROUP_ID, info, message_thread_id=topic_id, reply_markup=get_keyboard(user_id, read=False))
     await bot.send_message(user_id, "Готово! Твой запрос принят. Администратор скоро свяжется с тобой.")
     await callback.message.delete()
     await callback.answer()
@@ -849,6 +858,7 @@ async def process_comment(message: Message, state: FSMContext):
     await message.answer("Спасибо за оценку!")
     await state.clear()
 
+# ---------- Обработка сообщений из тем ----------
 @dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
 async def handle_admin_message(message: Message):
     if message.from_user.is_bot or message.is_topic_message is False:
@@ -926,12 +936,13 @@ async def process_block_button(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     if user_id not in blocked_users:
         blocked_users.add(user_id)
+        read_status[user_id] = False
         await save_data()
         try:
             await bot.send_message(user_id, "Вы были заблокированы.")
         except:
             pass
-        await callback.message.edit_text(callback.message.text + "\n\n🔒 Заблокирован", reply_markup=get_keyboard(user_id))
+        await callback.message.edit_text(callback.message.text + "\n\n🔒 Заблокирован", reply_markup=get_keyboard(user_id, read=False))
         await callback.answer("Пользователь заблокирован")
     else:
         await callback.answer("Пользователь уже заблокирован")
@@ -947,6 +958,7 @@ async def process_confirm_unblock(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])
     if user_id in blocked_users:
         blocked_users.discard(user_id)
+        read_status[user_id] = False
         await save_data()
         try:
             await bot.send_message(user_id, "Вы были разблокированы.")
@@ -956,7 +968,7 @@ async def process_confirm_unblock(callback: CallbackQuery):
         while lines and lines[-1].startswith(('🔒', '❓')):
             lines.pop()
         clean_text = '\n'.join(lines)
-        await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id))
+        await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id, read=False))
         await callback.answer("Пользователь разблокирован")
     else:
         await callback.answer("Пользователь не заблокирован")
@@ -968,7 +980,7 @@ async def process_cancel_unblock(callback: CallbackQuery):
     if lines and lines[-1].startswith('❓'):
         lines.pop()
     clean_text = '\n'.join(lines)
-    await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id))
+    await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id, read=False))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("read:"))
@@ -978,9 +990,30 @@ async def process_read_button(callback: CallbackQuery):
         await bot.send_message(user_id, "Ваш запрос прочитан, скоро с вами свяжутся.")
     except:
         pass
+    read_status[user_id] = True
+    await save_data()
     await callback.answer("Запрос отмечен как прочитанный")
     try:
-        await callback.message.edit_text(callback.message.text + "\n\n✅ Прочитано", reply_markup=None)
+        lines = callback.message.text.split('\n')
+        while lines and lines[-1].startswith(('✅', '↩️')):
+            lines.pop()
+        clean_text = '\n'.join(lines) + "\n\n✅ Прочитано"
+        await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id, read=True))
+    except:
+        pass
+
+@dp.callback_query(F.data.startswith("unread:"))
+async def process_unread_button(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    read_status[user_id] = False
+    await save_data()
+    await callback.answer("Прочтение отменено")
+    try:
+        lines = callback.message.text.split('\n')
+        while lines and lines[-1].startswith(('✅', '↩️')):
+            lines.pop()
+        clean_text = '\n'.join(lines)
+        await callback.message.edit_text(clean_text, reply_markup=get_keyboard(user_id, read=False))
     except:
         pass
 
